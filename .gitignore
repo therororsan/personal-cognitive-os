@@ -3,3 +3,7 @@ backend/.env
 backend/logs/
 __pycache__/
 *.pyc
+
+# Local operator scripts
+start_pco.bat
+stop_pco.bat
