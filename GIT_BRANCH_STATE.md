@@ -21,3 +21,10 @@
 - Always branch from remote default
 - Never reuse polluted branches
 - Branch state must be recorded in canonical docs
+
+
+---
+
+## ADD — 2026-02-04 — Telegram approval gate UX copy spec (PCO_BOT_COPY_SPEC.md)
+
+- Canonical doc set now includes **PCO_BOT_COPY_SPEC.md** for capture UX stability.

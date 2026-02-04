@@ -27,3 +27,10 @@
   - `source_latest_event_at` was recorded with `+00:00`
 - Note: This is an observation for operator clarity; no architecture or schema change implied.
 
+
+
+---
+
+## ADD — 2026-02-04 — Telegram approval gate UX copy spec (PCO_BOT_COPY_SPEC.md)
+
+- Added **PCO_BOT_COPY_SPEC.md** as canonical to prevent UX copy regressions (esp. iOS transcript copy friction).

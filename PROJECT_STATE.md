@@ -72,3 +72,20 @@ Operational details are retained verbatim unless explicitly superseded.
   - `meta.digest_included=false`
 - Artifact file size observation:
   - `find /c /v "" <artifact>` reported 17 lines.
+
+
+---
+
+## ADD — 2026-02-04 — Telegram approval gate UX copy spec (PCO_BOT_COPY_SPEC.md)
+
+### New canonical doc
+- Added **PCO_BOT_COPY_SPEC.md** (Telegram approval gate copy/UX spec) to the canonical doc set so future TAKE_A_DUMP snapshots include it.
+
+### Placement in repo
+- Store at repo root:
+  - `C:\Users\User\OneDrive\SMART\personal-cognitive-os\PCO_BOT_COPY_SPEC.md`
+
+### How it is used
+- Operator + developer reference for Telegram capture UX.
+- Codex changes that touch Telegram capture UX MUST be aligned to this spec.
+- If bot behavior changes, update this doc and include it in the next TAKE_A_DUMP.
