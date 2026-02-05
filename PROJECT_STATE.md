@@ -73,7 +73,6 @@ Operational details are retained verbatim unless explicitly superseded.
 - Artifact file size observation:
   - `find /c /v "" <artifact>` reported 17 lines.
 
-
 ---
 
 ## ADD — 2026-02-04 — Telegram approval gate UX copy spec (PCO_BOT_COPY_SPEC.md)
@@ -89,3 +88,139 @@ Operational details are retained verbatim unless explicitly superseded.
 - Operator + developer reference for Telegram capture UX.
 - Codex changes that touch Telegram capture UX MUST be aligned to this spec.
 - If bot behavior changes, update this doc and include it in the next TAKE_A_DUMP.
+
+---
+
+## ADD — 2026-02-04 — Stabilization checkpoint completed
+
+- A full stabilization window was executed and closed successfully.
+- Scope of stabilization:
+  - Canonical documentation aligned and committed (TAKE_A_DUMP).
+  - Telegram capture approval gate (approve / edit / reject) verified live.
+  - Edit-mode UX confirmed transcript-only per iOS copy constraint.
+  - Local-only operator scripts (`start_pco.bat`, `stop_pco.bat`) explicitly ignored via `.gitignore`.
+- Stabilization commit head:
+  - Branch: `feat/episode-builder-v1-job-final`
+  - Commit: `598fa1a`
+- Backend + Telegram bot restarted successfully after stabilization.
+- Text and voice capture flows both pass through the approval gate correctly.
+
+Status: **Stable, ready for controlled continuation**.
+
+---
+
+## ADD — Known Safe Resume Commands (PCO)
+
+Purpose: cold-start resume to a known-good operational state with **minimal risk**.  
+Properties: cmd.exe-first, no discovery, no file edits, no schema/API changes.
+
+Operator repo root:
+`C:\Users\User\OneDrive\SMART\personal-cognitive-os`
+
+### 0) Open cmd.exe in repo root
+```bat
+cd /d C:\Users\User\OneDrive\SMART\personal-cognitive-os
+```
+
+### 1) Confirm branch + cleanliness (read-only)
+```bat
+git branch --show-current
+git status
+```
+Expected:
+- Correct branch per `GIT_BRANCH_STATE.md`
+- Ideally: working tree clean
+
+### 2) Stop any stale PCO processes (idempotent)
+```bat
+call stop_pco.bat
+```
+Note: “PID not found” messages are benign if nothing was running.
+
+### 3) Start API + Telegram bot (known-good launch)
+```bat
+call start_pco.bat
+```
+Expected:
+- API running on `http://127.0.0.1:8000`
+- Telegram capture bot running
+
+### 4) Minimal API liveness check (read-only)
+```bat
+curl http://127.0.0.1:8000/health
+```
+Expected:
+- HTTP 200 (or project-standard health response)
+
+### 5) Minimal Telegram UX liveness (manual, no code changes)
+- Send a **text** message to the Telegram bot  
+  Expected: approval gate appears (✅ Approve | ✏️ Edit | ❌ Reject), message body is transcript-only.
+- Tap **✏️ Edit**  
+  Expected: edit-mode message body is transcript-only + ❌ Cancel.
+- (Optional) Send a **voice** message  
+  Expected: same gate behavior as text.
+
+### 6) Optional — Episode Builder job sanity run (job-only)
+Run only if you intend to operate Episode Builder now:
+```bat
+cd /d C:\Users\User\OneDrive\SMART\personal-cognitive-os\backend && call .\.venv\Scripts\activate.bat && docker compose up -d && python -m jobs.run_episode_builder
+```
+Expected:
+- Clear “done” output
+- Writes or skips based on new events (no errors)
+
+
+---
+
+## ADD — 2026-02-05 — Surface-agnostic phone-first MVP (Capture + Advisor)
+
+### Phone-first objective
+Primary user experience is phone-based:
+- **Capture** thoughts via voice/text
+- **Ask** for advice (FAST or DEEP)
+- Iterate via follow-ups (mode-switchable)
+
+Telegram is the current surface because it ships fastest, but the system must avoid Telegram lock-in.
+
+### Success milestone before building a custom app
+We will not invest in an iOS/Android app until all three are true:
+
+A) Capture works end-to-end on phone (voice/text → approved transcript stored)  
+B) The system can show evidence that it analyzed/organized/stored the record correctly (operator-visible artifacts)  
+C) The user can receive AI coaching advice (FAST + DEEP), with follow-up mode switching
+
+Only after A/B/C are met do we consider a custom app surface.
+
+### Canonical UX specs
+To support cold-start continuity, the following surface specs are canonical (and evolvable):
+
+- `PCO_BOT_COPY_SPEC.md` — capture approval gate UX (voice + text)
+- `PCO_ADVISOR_UX_SPEC.md` — advisor UX (A1 command-based `/ask`, FAST/DEEP)
+
+### Psychological salience framework
+- `PSYCHOLOGICAL_SALIENCE_FRAMEWORK.md` is canonical and evolvable.
+- It guides retention/retrieval priority; it is not a rigid contract.
+
+## ADD — 2026-02-05 — Advisor MVP A1 shipped on Telegram (sticky mode)
+
+Milestone:
+- Advisor MVP (A1 command-based) is implemented in the Telegram bot and verified working in real use.
+- Branch: `feat/advisor-mvp-a1`
+- Commit: `67b5e8d859f92d94c2bd7c67661cfddf7d966d81`
+
+User-facing commands (Telegram):
+- Set sticky default mode:
+  - `/mode deep` (default advisor mode = DEEP)
+  - `/mode fast` (default advisor mode = FAST)
+  - `/mode clear` (removes sticky default; `/ask` will prompt)
+- Ask for advice:
+  - `/ask <question>`
+
+Advisor interaction rules (Telegram):
+- `/ask` enters advisor flow and responds in FAST or DEEP depending on the sticky default (or via picker if no default set).
+- Follow-up mode can be switched via buttons during an active advisor session.
+- Exiting advisor session returns to normal capture behavior (approval gate applies to normal text/voice).
+
+Non-goals / constraints:
+- Telegram UX is intentionally kept minimal (“thin Telegram”) to prove the end-to-end loop before any custom iOS/Android surface work.
+- Core logic remains surface-agnostic; Telegram is just the current surface.

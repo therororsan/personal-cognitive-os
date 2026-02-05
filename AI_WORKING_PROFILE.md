@@ -23,3 +23,19 @@
   1) Update PCO_BOT_COPY_SPEC.md
   2) Append to DECISION_LOG.md + PROJECT_STATE.md (do not delete prior details)
   3) Record any deviations/failure modes in AI_CRITIQUE_LOG.md
+
+## ADD — 2026-02-05 — Operational invariant: prevent multiple Telegram bot pollers
+
+Failure pattern:
+- Running multiple `telegram_capture_bot.py` processes concurrently (e.g., start_pco.bat + manual runs) can cause Telegram updates to be consumed unpredictably, including “no response” symptoms.
+
+Operator rule:
+- Before restarting, always run:
+  - `call stop_pco.bat`
+- Prefer launching via `call start_pco.bat` (single known-good entrypoint) rather than starting the bot manually.
+- If Telegram replies appear missing, immediately verify only one bot process is running.
+
+Suggested operator check (read-only):
+- From repo root:
+  - `powershell -NoProfile -Command "$p=Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*telegram_capture_bot.py*' -and $_.CommandLine -notlike '*cmd /k*' }; ($p|Measure-Object).Count"`
+Expected: `1`

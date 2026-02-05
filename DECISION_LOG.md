@@ -41,3 +41,72 @@
 - Added **PCO_BOT_COPY_SPEC.md** as canonical UX copy spec for Telegram approval gate (approve/edit/reject + transcript-only edit mode).
 - Policy: If capture-bot reply strings/buttons change, update PCO_BOT_COPY_SPEC.md and include it in TAKE_A_DUMP.
 - Operational note: current operator repo root is `C:\Users\User\OneDrive\SMART\personal-cognitive-os`.
+
+## ADD — 2026-02-04 — Stabilization discipline decision
+
+- Introduced an explicit **stabilization window** concept:
+  - During stabilization, no new features or refactors are introduced.
+  - Only alignment, verification, and canonical documentation updates are allowed.
+- Decision:
+  - Stabilization must end in a **clean, pushed checkpoint** before any new feature work proceeds.
+- This rule now applies to future multi-step work (e.g. capture UX, episode logic, future surfaces).
+
+
+## ADD — 2026-02-05 — Platform strategy: Telegram now, surface-agnostic core
+
+Decision:
+- Telegram is used as an initial **phone-first** surface for capture + advice because it is fast to ship.
+- Core logic must remain **surface-agnostic** so an iOS/Android app can be built later without re-architecting.
+
+---
+
+## ADD — 2026-02-05 — Advisor MVP interaction style (A1)
+
+Decision:
+- Advisor MVP uses **command-based separation** in Telegram:
+
+  - Capture = normal voice/text messages (approval gate)
+  - Advice = `/ask <question>`
+
+Rationale:
+- Avoids accidental mixing of “capture” vs “question” intent.
+- Transfers cleanly to future app surfaces (separate capture vs ask screens).
+
+---
+
+## ADD — 2026-02-05 — App development gate (A/B/C)
+
+Decision:
+- Custom app work is deferred until all are proven in real use:
+  A) Capture works
+  B) Analysis filing/storage is visible and correct
+  C) Advisor (FAST/DEEP) works with follow-up mode switching
+
+---
+
+## ADD — 2026-02-05 — Canonical salience + advisor UX specs
+
+Decision:
+- Promote the following to canonical, evolvable artifacts:
+  - `PSYCHOLOGICAL_SALIENCE_FRAMEWORK.md`
+  - `PCO_ADVISOR_UX_SPEC.md`
+
+These must be included in future TAKE_A_DUMP snapshots.
+
+---
+
+## ADD — 2026-02-05 — Advisor MVP A1: sticky default mode (Option A)
+
+Decision:
+- Advisor mode (FAST/DEEP) is **sticky by default** per user:
+  - The user can set a default with `/mode fast` or `/mode deep`.
+  - The default persists until cleared with `/mode clear`.
+  - `/ask <question>` uses the sticky default; mode picker is only needed when no default exists.
+
+Rationale:
+- Reduces friction for repeated usage while keeping a clean A1 command boundary (`/ask` vs capture).
+- Keeps Telegram UX thin and avoids over-investment in surface-specific behaviors.
+
+Implementation checkpoint:
+- Branch: `feat/advisor-mvp-a1`
+- Commit: `67b5e8d859f92d94c2bd7c67661cfddf7d966d81`
