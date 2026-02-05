@@ -4,6 +4,7 @@ import os
 import tempfile
 import urllib.request
 import uuid
+import hashlib
 from datetime import datetime, timezone
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -30,6 +31,9 @@ DEEPGRAM_URL = "https://api.deepgram.com/v1/listen?punctuate=true&smart_format=t
 
 # Pending transcript storage (file-based; no DB/schema changes)
 PENDING_DIR = os.path.join(os.path.dirname(__file__), "logs", "pending_transcripts")
+
+# Advisor run logs (operator-visible; file-based; no DB/schema changes)
+ADVISOR_RUNS_DIR = os.path.join(os.path.dirname(__file__), "logs", "advisor_runs")
 
 # Callback data prefix (kept short for Telegram limits)
 CB_PREFIX = "pco"
@@ -82,6 +86,172 @@ def _delete_pending(chat_id: int, pending_id: str) -> None:
         os.remove(path)
     except Exception:
         pass
+
+
+# --- Advisor run logging (operator-visible artifacts; append-only JSONL) ---
+
+def _ensure_advisor_runs_dir() -> None:
+    os.makedirs(ADVISOR_RUNS_DIR, exist_ok=True)
+
+
+def _local_date_str() -> str:
+    # Use local timezone for filenames to match operator expectations.
+    return datetime.now().astimezone().date().isoformat()
+
+
+def _sha256_text(s: str) -> str:
+    return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
+
+
+def _try_extract_raw_event_id(body: str) -> str | None:
+    try:
+        obj = json.loads(body)
+        if isinstance(obj, dict):
+            v = obj.get("id")
+            return str(v) if v else None
+    except Exception:
+        return None
+    return None
+
+
+def _append_advisor_run(record: dict) -> None:
+    _ensure_advisor_runs_dir()
+    path = os.path.join(ADVISOR_RUNS_DIR, f"{_local_date_str()}.jsonl")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+
+# In-memory aggregation for operator-visible RUN_COMPLETE summary lines.
+# Best-effort only: never required for core bot behavior.
+_ADVISOR_RUN_STATS: dict[str, dict[str, object]] = {}
+
+
+def _update_advisor_run_stats(
+    *,
+    event: str,
+    run_id: str,
+    mode: str | None,
+    answer_len: int,
+) -> dict[str, object]:
+    e = str(event or "").upper()
+    rid = str(run_id)
+    st = _ADVISOR_RUN_STATS.get(rid)
+    if st is None:
+        st = {
+            "started_at_utc": _utc_now_iso(),
+            "turns": 0,
+            "total_answer_chars": 0,
+            "final_mode": None,
+            "last_event": None,
+        }
+        _ADVISOR_RUN_STATS[rid] = st
+
+    if e in {"ANSWER", "FOLLOWUP"}:
+        st["turns"] = int(st.get("turns", 0)) + 1
+        st["total_answer_chars"] = int(st.get("total_answer_chars", 0)) + int(answer_len or 0)
+        st["final_mode"] = (str(mode).upper() if mode else st.get("final_mode"))
+        st["last_event"] = e
+    elif e == "ASK":
+        st["last_event"] = e
+        if mode:
+            st["final_mode"] = str(mode).upper()
+
+    return st
+
+
+def _emit_run_complete_summary(
+    *,
+    run_id: str,
+    chat_id: int | None,
+    telegram_user_id: int | None,
+    question: str,
+    stats: dict[str, object],
+) -> None:
+    rec = {
+        "ts_utc": _utc_now_iso(),
+        "event": "RUN_COMPLETE",
+        "run_id": run_id,
+        "turn": int(stats.get("turns", 0)),
+        "telegram_chat_id": chat_id,
+        "telegram_user_id": telegram_user_id,
+        "mode": stats.get("final_mode"),
+        "question": (question or "").strip(),
+        "user_text": None,
+        "answer_text": None,
+        "answer_len": int(stats.get("total_answer_chars", 0)),
+        "answer_sha256": None,
+        "raw_event_ok": None,
+        "raw_event_id": None,
+        "started_at_utc": stats.get("started_at_utc"),
+        "ended_at_utc": _utc_now_iso(),
+        "last_event": stats.get("last_event"),
+        "total_answer_chars": int(stats.get("total_answer_chars", 0)),
+        "turns_so_far": int(stats.get("turns", 0)),
+    }
+    try:
+        _append_advisor_run(rec)
+    except Exception:
+        pass
+
+
+def _log_advisor_event(
+    *,
+    event: str,
+    run_id: str,
+    turn: int,
+    chat_id: int | None,
+    telegram_user_id: int | None,
+    mode: str | None,
+    question: str,
+    user_text: str | None = None,
+    answer_text: str | None = None,
+    raw_event_ok: bool | None = None,
+    raw_event_body: str | None = None,
+) -> None:
+    q = (question or "").strip()
+    u = (user_text or "").strip() if user_text else None
+    a = (answer_text or "").strip() if answer_text else None
+
+    rec = {
+        "ts_utc": _utc_now_iso(),
+        "event": str(event or "").upper(),
+        "run_id": run_id,
+        "turn": int(turn),
+        "telegram_chat_id": chat_id,
+        "telegram_user_id": telegram_user_id,
+        "mode": (str(mode).upper() if mode else None),
+        "question": q,
+        "user_text": u,
+        "answer_text": a,
+        "answer_len": len(a) if a else 0,
+        "answer_sha256": _sha256_text(a) if a else None,
+        "raw_event_ok": raw_event_ok,
+        "raw_event_id": _try_extract_raw_event_id(raw_event_body or "") if raw_event_body else None,
+    }
+
+    # Keep this best-effort: never break bot flow due to logging.
+    try:
+        _append_advisor_run(rec)
+    except Exception:
+        pass
+
+    # Also emit a compact RUN_COMPLETE summary after each produced answer.
+    if rec.get("event") in {"ANSWER", "FOLLOWUP"}:
+        stats = _update_advisor_run_stats(
+            event=rec.get("event") or "",
+            run_id=run_id,
+            mode=rec.get("mode"),
+            answer_len=int(rec.get("answer_len") or 0),
+        )
+        _emit_run_complete_summary(
+            run_id=run_id,
+            chat_id=chat_id,
+            telegram_user_id=telegram_user_id,
+            question=q,
+            stats=stats,
+        )
+
 
 
 def _post_raw_event(source: str, text: str) -> tuple[bool, str]:
@@ -244,6 +414,8 @@ def _advisor_set_mode(context: ContextTypes.DEFAULT_TYPE, mode: str | None) -> N
 def _advisor_start_session(context: ContextTypes.DEFAULT_TYPE, question: str) -> None:
     context.user_data[ADVISOR_SESSION_KEY] = {
         "active": True,
+        "run_id": uuid.uuid4().hex[:12],
+        "turn": 0,
         "question": question,
         "history": [{"role": "user", "text": question, "ts": _utc_now_iso()}],
         "mode": _advisor_get_mode(context) or None,  # selected later if None
@@ -405,10 +577,27 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Usage: /ask <question>")
         return
 
+    chat_id = update.message.chat_id
+    telegram_user_id = update.message.from_user.id if update.message.from_user else None
+
     _advisor_start_session(context, question)
+    session = context.user_data.get(ADVISOR_SESSION_KEY, {})
+    run_id = session.get("run_id") if isinstance(session, dict) else uuid.uuid4().hex[:12]
+    turn = int(session.get("turn", 0)) if isinstance(session, dict) else 0
 
     # Log question as raw event (surface-agnostic; schema remains {source,text})
-    _post_raw_event("telegram_advisor", f"ASK\nMODE=(pending)\nQ: {question}")
+    ok, body = _post_raw_event("telegram_advisor", f"ASK\nMODE=(pending)\nQ: {question}")
+    _log_advisor_event(
+    event="ASK",
+    run_id=str(run_id),
+    turn=turn,
+    chat_id=chat_id,
+    telegram_user_id=telegram_user_id,
+    mode=None,
+    question=question,
+    raw_event_ok=ok,
+    raw_event_body=body,
+    )
 
     mode = _advisor_get_mode(context)
     if not mode:
@@ -426,7 +615,19 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     answer = _advisor_compose_answer(mode, question, followup=None)
     _advisor_append(context, "assistant", answer)
 
-    _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
+    ok, body = _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
+    _log_advisor_event(
+    event="ANSWER",
+    run_id=str(run_id),
+    turn=turn,
+    chat_id=chat_id,
+    telegram_user_id=telegram_user_id,
+    mode=mode,
+    question=question,
+    answer_text=answer,
+    raw_event_ok=ok,
+    raw_event_body=body,
+    )
 
     await update.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
 
@@ -482,7 +683,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             session["mode"] = mode
         _advisor_append(context, "assistant", answer)
 
-        _post_raw_event("telegram_advisor", f"FOLLOWUP\nMODE={mode}\nQ: {question}\nU: {text}\n\n{answer}")
+        # Increment turn counter for this advisor run
+        run_id = session.get("run_id") if isinstance(session, dict) else uuid.uuid4().hex[:12]
+        turn = int(session.get("turn", 0)) if isinstance(session, dict) else 0
+        turn += 1
+        if isinstance(session, dict):
+            session["turn"] = turn
+
+        ok, body = _post_raw_event("telegram_advisor", f"FOLLOWUP\nMODE={mode}\nQ: {question}\nU: {text}\n\n{answer}")
+        _log_advisor_event(
+        event="FOLLOWUP",
+        run_id=str(run_id),
+        turn=turn,
+        chat_id=update.message.chat_id,
+        telegram_user_id=update.message.from_user.id if update.message.from_user else None,
+        mode=mode,
+        question=str(question or ""),
+        user_text=text,
+        answer_text=answer,
+        raw_event_ok=ok,
+        raw_event_body=body,
+        )
 
         await update.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
         return
@@ -586,7 +807,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             answer = _advisor_compose_answer(mode, str(question), followup=None)
             _advisor_append(context, "assistant", answer)
-            _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
+            ok, body = _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
+            run_id = session.get("run_id") if isinstance(session, dict) else uuid.uuid4().hex[:12]
+            turn = int(session.get("turn", 0)) if isinstance(session, dict) else 0
+            _log_advisor_event(
+            event="ANSWER",
+            run_id=str(run_id),
+            turn=turn,
+            chat_id=q.message.chat_id if q.message else None,
+            telegram_user_id=q.from_user.id if q.from_user else None,
+            mode=mode,
+            question=str(question or ""),
+            answer_text=answer,
+            raw_event_ok=ok,
+            raw_event_body=body,
+            )
 
             await q.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
             return
