@@ -419,6 +419,8 @@ def _advisor_start_session(context: ContextTypes.DEFAULT_TYPE, question: str) ->
         "question": question,
         "history": [{"role": "user", "text": question, "ts": _utc_now_iso()}],
         "mode": _advisor_get_mode(context) or None,  # selected later if None
+        "ask_message_id": None,
+        "asked_at_utc": _utc_now_iso(),
     }
 
 
@@ -580,8 +582,18 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
     telegram_user_id = update.message.from_user.id if update.message.from_user else None
 
+    message_id = getattr(update.message, 'message_id', None)
+    # Dedupe: the same Telegram message can be delivered more than once (or multiple handlers can see it).
+    # We treat a given /ask message_id as idempotent.
+    existing = context.user_data.get(ADVISOR_SESSION_KEY)
+    if isinstance(existing, dict) and existing.get('active') and existing.get('ask_message_id') == message_id:
+        return
+
     _advisor_start_session(context, question)
     session = context.user_data.get(ADVISOR_SESSION_KEY, {})
+    if isinstance(session, dict):
+        session['ask_message_id'] = message_id
+        session['asked_at_utc'] = _utc_now_iso()
     run_id = session.get("run_id") if isinstance(session, dict) else uuid.uuid4().hex[:12]
     turn = int(session.get("turn", 0)) if isinstance(session, dict) else 0
 
