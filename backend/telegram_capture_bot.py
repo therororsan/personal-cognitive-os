@@ -1,4 +1,4 @@
-# PCO TELEGRAM CAPTURE BOT — APPROVAL GATE v1 (2026-02-04)
+# PCO TELEGRAM CAPTURE BOT — APPROVAL GATE v1 + ADVISOR MVP A1 (2026-02-05)
 import json
 import os
 import tempfile
@@ -33,6 +33,10 @@ PENDING_DIR = os.path.join(os.path.dirname(__file__), "logs", "pending_transcrip
 
 # Callback data prefix (kept short for Telegram limits)
 CB_PREFIX = "pco"
+
+# Advisor (Telegram-only surface; core intent is surface-agnostic)
+ADVISOR_SESSION_KEY = "advisor_session"
+ADVISOR_DEFAULT_MODE_KEY = "advisor_default_mode"
 
 
 def _utc_now_iso() -> str:
@@ -184,12 +188,140 @@ def _build_cancel_keyboard(pending_id: str) -> InlineKeyboardMarkup:
     )
 
 
+def _build_ask_mode_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("⚡ FAST", callback_data=f"{CB_PREFIX}:ask:fast"),
+                InlineKeyboardButton("🧠 DEEP", callback_data=f"{CB_PREFIX}:ask:deep"),
+            ]
+        ]
+    )
+
+
+def _build_ask_followup_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("⚡ Fast follow-up", callback_data=f"{CB_PREFIX}:ask:ff"),
+                InlineKeyboardButton("🧠 Deep follow-up", callback_data=f"{CB_PREFIX}:ask:df"),
+            ],
+            [InlineKeyboardButton("✅ Done", callback_data=f"{CB_PREFIX}:ask:done")],
+        ]
+    )
+
+
 def _format_transcript(text: str, limit: int = 3800) -> str:
     # Telegram message limit is ~4096 chars; keep headroom for safety.
     s = (text or "").strip()
     if len(s) <= limit:
         return s
     return s[:limit].rstrip() + " …"
+
+
+def _advisor_active(context: ContextTypes.DEFAULT_TYPE) -> bool:
+    s = context.user_data.get(ADVISOR_SESSION_KEY)
+    return bool(s and isinstance(s, dict) and s.get("active"))
+
+
+def _advisor_get_mode(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    mode = context.user_data.get(ADVISOR_DEFAULT_MODE_KEY)
+    if not mode:
+        return None
+    mode = str(mode).strip().upper()
+    return mode if mode in ("FAST", "DEEP") else None
+
+
+def _advisor_set_mode(context: ContextTypes.DEFAULT_TYPE, mode: str | None) -> None:
+    if not mode:
+        context.user_data.pop(ADVISOR_DEFAULT_MODE_KEY, None)
+        return
+    m = str(mode).strip().upper()
+    if m in ("FAST", "DEEP"):
+        context.user_data[ADVISOR_DEFAULT_MODE_KEY] = m
+
+
+def _advisor_start_session(context: ContextTypes.DEFAULT_TYPE, question: str) -> None:
+    context.user_data[ADVISOR_SESSION_KEY] = {
+        "active": True,
+        "question": question,
+        "history": [{"role": "user", "text": question, "ts": _utc_now_iso()}],
+        "mode": _advisor_get_mode(context) or None,  # selected later if None
+    }
+
+
+def _advisor_end_session(context: ContextTypes.DEFAULT_TYPE) -> None:
+    s = context.user_data.get(ADVISOR_SESSION_KEY)
+    if isinstance(s, dict):
+        s["active"] = False
+    context.user_data.pop(ADVISOR_SESSION_KEY, None)
+
+
+def _advisor_append(context: ContextTypes.DEFAULT_TYPE, role: str, text: str) -> None:
+    s = context.user_data.get(ADVISOR_SESSION_KEY)
+    if not isinstance(s, dict):
+        return
+    hist = s.get("history")
+    if not isinstance(hist, list):
+        hist = []
+        s["history"] = hist
+    hist.append({"role": role, "text": text, "ts": _utc_now_iso()})
+
+
+def _advisor_compose_answer(mode: str, question: str, followup: str | None) -> str:
+    q = (question or "").strip()
+    f = (followup or "").strip() if followup else ""
+    if mode == "FAST":
+        parts = [
+            "⚡ FAST (v0)",
+            "",
+            f"**Question:** {q}" if q else "**Question:** (missing)",
+        ]
+        if f:
+            parts.append(f"**Follow-up:** {f}")
+        parts += [
+            "",
+            "**Best bet (quick):**",
+            "- (1) Choose the smallest next action that reduces uncertainty.",
+            "- (2) Protect energy/attention; avoid over-commitment this week.",
+            "",
+            "**Next step (do today):**",
+            "- Write 1 sentence: what outcome matters most by end of week?",
+            "- Take 15 minutes to pick the one move that supports it.",
+            "",
+            "If you want, reply with: what’s the *real constraint* (time, energy, fear, ambiguity)?",
+        ]
+        return _format_transcript("\n".join(parts), limit=3800)
+
+    # DEEP
+    parts = [
+        "🧠 DEEP (v0)",
+        "",
+        f"**Question:** {q}" if q else "**Question:** (missing)",
+    ]
+    if f:
+        parts.append(f"**Follow-up:** {f}")
+    parts += [
+        "",
+        "**1) Frame the decision**",
+        "- What does “slow down” mean operationally (hours? scope? pace? standards)?",
+        "- What’s the downside of slowing down vs not slowing down?",
+        "",
+        "**2) Competing hypotheses**",
+        "- You need recovery to avoid a bad week later (burnout / mistakes).",
+        "- You’re avoiding discomfort, and speed would compound progress.",
+        "",
+        "**3) A practical test (low regret)**",
+        "- Pick 1–2 deliverables that matter most this week.",
+        "- Timebox deep work blocks; cut/decline the rest.",
+        "",
+        "**4) Risks to watch**",
+        "- If slowing down causes anxiety/avoidance spiral → tighten scope, not pace.",
+        "- If speeding up causes sloppy outputs → add a simple quality gate.",
+        "",
+        "Reply with: what’s the deadline pressure, and what happens if you slip by 1–2 days?",
+    ]
+    return _format_transcript("\n".join(parts), limit=3800)
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -205,7 +337,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Text: send a message → I'll show it for Approve/Edit/Reject.\n"
         "Voice: send a voice message → I'll transcribe and show it for Approve/Edit/Reject.\n"
         "Edit: tap ✏️ Edit → I'll send the transcript as a clean copyable message.\n"
-        "Cancel edit: tap ❌ Cancel (or /cancel)."
+        "Cancel edit: tap ❌ Cancel (or /cancel).\n\n"
+        "Advisor: /ask <question>\n"
+        "Mode: /mode fast | /mode deep | /mode clear"
     )
 
 
@@ -213,6 +347,88 @@ async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Backstop for users who prefer typing.
     context.user_data.pop("edit_pending_id", None)
     await update.message.reply_text("Cancelled.")
+
+
+async def mode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    arg = ""
+    if context.args:
+        arg = " ".join(context.args).strip()
+    else:
+        # allow "/mode deep" typed with extra spaces
+        arg = (update.message.text or "").replace("/mode", "", 1).strip()
+
+    a = (arg or "").strip().lower()
+
+    if a in ("fast", "f"):
+        _advisor_set_mode(context, "FAST")
+        await update.message.reply_text("Advisor default mode set: ⚡ FAST")
+        return
+
+    if a in ("deep", "d"):
+        _advisor_set_mode(context, "DEEP")
+        await update.message.reply_text("Advisor default mode set: 🧠 DEEP")
+        return
+
+    if a in ("clear", "reset", "off", "none"):
+        _advisor_set_mode(context, None)
+        await update.message.reply_text("Advisor default mode cleared (will ask each time).")
+        return
+
+    await update.message.reply_text("Usage: /mode fast | /mode deep | /mode clear")
+
+
+async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if _advisor_active(context):
+        _advisor_end_session(context)
+        await update.message.reply_text("Advisor session ended. Back to capture.")
+    else:
+        await update.message.reply_text("No active advisor session.")
+
+
+async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    # Extract question
+    question = ""
+    if context.args:
+        question = " ".join(context.args).strip()
+    else:
+        # In case args parsing is odd, fall back to raw text
+        t = (update.message.text or "").strip()
+        question = t[len("/ask") :].strip() if t.lower().startswith("/ask") else t
+
+    if not question:
+        await update.message.reply_text("Usage: /ask <question>")
+        return
+
+    _advisor_start_session(context, question)
+
+    # Log question as raw event (surface-agnostic; schema remains {source,text})
+    _post_raw_event("telegram_advisor", f"ASK\nMODE=(pending)\nQ: {question}")
+
+    mode = _advisor_get_mode(context)
+    if not mode:
+        await update.message.reply_text(
+            "How do you want to explore this?",
+            reply_markup=_build_ask_mode_keyboard(),
+        )
+        return
+
+    # If default mode is set, answer immediately
+    session = context.user_data.get(ADVISOR_SESSION_KEY, {})
+    if isinstance(session, dict):
+        session["mode"] = mode
+
+    answer = _advisor_compose_answer(mode, question, followup=None)
+    _advisor_append(context, "assistant", answer)
+
+    _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
+
+    await update.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
 
 
 async def _send_review(message, transcript: str, pending_id: str) -> None:
@@ -248,6 +464,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         await update.message.reply_text("Updated.")
         await _send_review(update.message, text, pending_id)
+        return
+
+    # Advisor follow-up mode: while active, treat plain text as advisor follow-up (no approval gate).
+    if _advisor_active(context):
+        session = context.user_data.get(ADVISOR_SESSION_KEY, {})
+        question = session.get("question") if isinstance(session, dict) else ""
+        mode = (session.get("mode") if isinstance(session, dict) else None) or _advisor_get_mode(context) or "FAST"
+        mode = str(mode).upper()
+        if mode not in ("FAST", "DEEP"):
+            mode = "FAST"
+
+        _advisor_append(context, "user", text)
+
+        answer = _advisor_compose_answer(mode, str(question or ""), followup=text)
+        if isinstance(session, dict):
+            session["mode"] = mode
+        _advisor_append(context, "assistant", answer)
+
+        _post_raw_event("telegram_advisor", f"FOLLOWUP\nMODE={mode}\nQ: {question}\nU: {text}\n\n{answer}")
+
+        await update.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
         return
 
     # Normal text: use the same approval gate as voice.
@@ -323,13 +560,54 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await q.answer()
 
     data = (q.data or "").strip()
-    # Expect: "pco:<action>:<pending_id>"
+    # Expect: "pco:<action>:<id>"
     parts = data.split(":")
     if len(parts) != 3 or parts[0] != CB_PREFIX:
         return
 
     action = parts[1]
     pending_id = parts[2]
+
+    # Advisor callbacks (do not touch capture state/files)
+    if action == "ask":
+        # pending_id here is actually the ask sub-action: fast|deep|ff|df|done
+        sub = (pending_id or "").strip().lower()
+        if sub in ("fast", "deep"):
+            mode = "FAST" if sub == "fast" else "DEEP"
+            session = context.user_data.get(ADVISOR_SESSION_KEY)
+            if isinstance(session, dict):
+                session["mode"] = mode
+
+            # If user has no default yet, keep it simple: they can set one with /mode
+            question = session.get("question") if isinstance(session, dict) else ""
+            if not question:
+                await q.message.reply_text("No active /ask question. Try /ask <question>.")
+                return
+
+            answer = _advisor_compose_answer(mode, str(question), followup=None)
+            _advisor_append(context, "assistant", answer)
+            _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
+
+            await q.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
+            return
+
+        if sub in ("ff", "df"):
+            mode = "FAST" if sub == "ff" else "DEEP"
+            session = context.user_data.get(ADVISOR_SESSION_KEY)
+            if isinstance(session, dict):
+                session["mode"] = mode
+            await q.message.reply_text(f"Mode switched for follow-ups: {'⚡ FAST' if mode=='FAST' else '🧠 DEEP'}")
+            return
+
+        if sub == "done":
+            if _advisor_active(context):
+                _advisor_end_session(context)
+                await q.message.reply_text("Advisor session ended. Back to capture.")
+            else:
+                await q.message.reply_text("No active advisor session.")
+            return
+
+        return
 
     chat_id = q.message.chat_id if q.message else None
     if chat_id is None:
@@ -388,6 +666,12 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("cancel", cancel_cmd))
+
+    # Advisor MVP A1 (command-based)
+    app.add_handler(CommandHandler("mode", mode_cmd))
+    app.add_handler(CommandHandler("ask", ask_cmd))
+    app.add_handler(CommandHandler("done", done_cmd))
+
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
