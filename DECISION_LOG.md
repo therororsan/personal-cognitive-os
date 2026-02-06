@@ -110,3 +110,26 @@ Rationale:
 Implementation checkpoint:
 - Branch: `feat/advisor-mvp-a1`
 - Commit: `67b5e8d859f92d94c2bd7c67661cfddf7d966d81`
+
+---
+
+## ADD — 2026-02-05 — “Daily digest” terminology is superseded (non-user-facing)
+
+Decision:
+- “Daily digest to user” is **not** a requirement.
+- Any periodic processing is background-only (batch analysis / episode builder / memory update), with operator-visible artifacts.
+- Avoid reintroducing “daily digest” language in future plans unless explicitly requested.
+
+## ADD — 2026-02-06 — Controlled Codex Adoption
+
+Decision:
+- Codex may be used starting at **Layer 3 (Memory Construction)** only.
+- Codex is an optional accelerator, not a default workflow.
+
+Constraints:
+- Codex must follow the **Codex Usage Protocol** in AI_WORKING_PROFILE.md.
+- Safety, reversibility, and isolation take precedence over speed.
+
+Rationale:
+- Previous negative Codex experience (file deletion, unrecoverable state) requires strict governance.
+- Canonical discipline must extend to tooling choices.

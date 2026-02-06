@@ -38,10 +38,15 @@ Operational details are retained verbatim unless explicitly superseded.
 
 ---
 
-## Daily Digest
-- Automated
-- Stable
-- Produces daily digest artifacts
+## Background analysis (daily batch; not user-facing)
+
+- The project does **not** require a user-facing “daily digest” sent to the user.
+- A daily (or periodic) batch job may exist purely as **background maintenance** to:
+  - organize/structure captured records into durable memory/history,
+  - update episode artifacts,
+  - update retrieval indexes for advisor.
+- Terminology guardrail:
+  - Use “batch analysis” / “episode builder” / “background maintenance job” rather than “daily digest” unless you explicitly re-introduce a user-facing digest requirement.
 
 ---
 
@@ -224,3 +229,26 @@ Advisor interaction rules (Telegram):
 Non-goals / constraints:
 - Telegram UX is intentionally kept minimal (“thin Telegram”) to prove the end-to-end loop before any custom iOS/Android surface work.
 - Core logic remains surface-agnostic; Telegram is just the current surface.
+
+## Backend Status
+- FastAPI + Postgres
+- Backend is authoritative; chat is non-authoritative
+- Running and stable
+
+---
+
+## Development Tooling Policy (ADD — 2026-02-06)
+
+- Human-driven development is the default.
+- Codex is approved **only** as a constrained accelerator.
+- All Codex usage must:
+  - occur after a clean, committed checkpoint
+  - be fully reversible via git
+  - respect isolation boundaries
+
+This project explicitly prioritizes:
+- correctness
+- inspectability
+- recoverability
+
+over raw iteration speed.

@@ -58,3 +58,11 @@ All capture/advice concepts must map cleanly to a future mobile app:
 - ask screen (FAST/DEEP)
 - follow-up with mode switching
 
+## ADD — 2026-02-06 — Codex Isolation Requirement (LOCKED)
+
+- Codex must operate only on isolated, explicitly approved files.
+- Codex must not modify core system files unless explicitly authorized.
+- Git is the sole rollback mechanism.
+- Any Codex-induced drift is considered an architectural failure.
+
+This decision is locked to prevent accidental large-scale repo damage.

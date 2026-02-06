@@ -5,10 +5,10 @@
 - Small, sequential steps
 - Downloadable replacement files only (no inline edits)
 - Backend is authoritative; chat is non-authoritative
+- Canonical docs are binding; chat is non-binding
 
 ## New Reinforced Mode
 - RMP: always provide downloadable artifacts for file changes
-
 
 ---
 
@@ -23,6 +23,8 @@
   1) Update PCO_BOT_COPY_SPEC.md
   2) Append to DECISION_LOG.md + PROJECT_STATE.md (do not delete prior details)
   3) Record any deviations/failure modes in AI_CRITIQUE_LOG.md
+
+---
 
 ## ADD — 2026-02-05 — Operational invariant: prevent multiple Telegram bot pollers
 
@@ -39,3 +41,36 @@ Suggested operator check (read-only):
 - From repo root:
   - `powershell -NoProfile -Command "$p=Get-CimInstance Win32_Process | ? { $_.CommandLine -like '*telegram_capture_bot.py*' -and $_.CommandLine -notlike '*cmd /k*' }; ($p|Measure-Object).Count"`
 Expected: `1`
+
+---
+
+## ADD — 2026-02-06 — Codex Usage Protocol (BINDING)
+
+Codex is approved **only as a surgical accelerator**, never as a default tool.
+
+### Preconditions (MANDATORY)
+Before any Codex involvement:
+1) `git status` MUST be clean  
+2) All work MUST be committed and pushed  
+3) Repo root MUST be confirmed  
+
+If any of the above is false → **Codex use is forbidden**.
+
+### Scope Isolation
+- Codex may only operate on **explicitly named files or directories**
+- No global refactors
+- No file deletions
+- No renames
+- No schema / API / architecture changes unless explicitly authorized
+
+### Recovery Guarantee
+- `git restore` MUST be sufficient to fully revert Codex changes
+- If rollback cannot be guaranteed → Codex must not be used
+
+### Output Contract
+- Codex-generated changes must be:
+  - minimal
+  - explained
+  - provided as downloadable replacement files only
+
+Codex violations must be recorded in **AI_CRITIQUE_LOG.md**.
