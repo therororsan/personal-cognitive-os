@@ -252,3 +252,28 @@ This project explicitly prioritizes:
 - recoverability
 
 over raw iteration speed.
+
+---
+
+## Layer 3 — Memory Construction v0 (LOCKED)
+
+Status:
+- Implemented as job-only (`run_memory_builder.py`)
+- File-based
+- Append-only JSONL ledger
+- No DB schema changes
+
+Artifact path:
+- `backend/logs/memory/<user_id>/memory_v0.jsonl`
+
+Properties:
+- Weak-signal candidates only
+- Confidence-weighted
+- Evidence-linked to episode artifacts
+- Fully reversible (delete memory directory)
+
+Non-goals:
+- No consolidation
+- No compaction
+- No irreversible summarization
+- No schema modification

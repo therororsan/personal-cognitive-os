@@ -66,3 +66,24 @@ All capture/advice concepts must map cleanly to a future mobile app:
 - Any Codex-induced drift is considered an architectural failure.
 
 This decision is locked to prevent accidental large-scale repo damage.
+
+---
+
+## ADD — 2026-02-06 — Memory Construction v0 Isolation (LOCKED)
+
+- Memory v0 must:
+  - be append-only
+  - be file-based
+  - avoid schema changes
+  - avoid irreversible compaction
+
+- Memory entries must:
+  - include source_input_hash
+  - include source_episode_path
+  - include confidence and salience fields
+
+- Reversibility guarantee:
+  - Deleting `backend/logs/memory/` fully disables Layer 3 effects.
+  - No core system modification is allowed.
+
+This decision prevents premature hardening of memory semantics.

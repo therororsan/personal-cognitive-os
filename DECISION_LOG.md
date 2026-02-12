@@ -133,3 +133,31 @@ Constraints:
 Rationale:
 - Previous negative Codex experience (file deletion, unrecoverable state) requires strict governance.
 - Canonical discipline must extend to tooling choices.
+
+## ADD — 2026-02-06 — Layer 3: Memory Construction v0 (append-only)
+
+Decision:
+- Introduce file-based memory ledger:
+  - `backend/logs/memory/<user_id>/memory_v0.jsonl`
+- Append-only JSONL format.
+- No DB schema changes.
+- No destructive updates.
+- No compaction or merging.
+
+Properties:
+- Weak-signal / confidence-weighted.
+- Each entry must include:
+  - source episode path
+  - source input_hash
+  - evidence pointer
+- Re-runs must not duplicate entries for same input_hash.
+
+Rationale:
+- Enables long-term memory accumulation without architectural risk.
+- Fully reversible (delete memory folder to disable).
+- Keeps Layer 3 isolated from core system.
+
+Classification:
+- Non-breaking.
+- No API changes.
+- Job-only.
