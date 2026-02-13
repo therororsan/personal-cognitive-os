@@ -51,6 +51,9 @@ ADVISOR_DEFAULT_MODE_KEY = "advisor_default_mode"
 # 3) otherwise: no memory injected (fail open)
 MEMORY_USER_ID_ENV = "PCO_MEMORY_USER_ID"
 MEMORY_TAIL_LIMIT = int(os.environ.get("PCO_MEMORY_TAIL_LIMIT", "20"))
+# Memory candidate selection (read-time only; no schema/compaction; fail-open)
+MEMORY_MIN_CONF = float(os.environ.get("PCO_MEMORY_MIN_CONF", "0.55"))
+MEMORY_MAX_CANDIDATES = int(os.environ.get("PCO_MEMORY_MAX_CANDIDATES", "3"))
 MEMORY_DIR = os.path.join(os.path.dirname(__file__), "logs", "memory")
 
 
@@ -338,6 +341,93 @@ def _load_recent_memory_candidates(limit: int = MEMORY_TAIL_LIMIT) -> list[dict[
 
     return list(dq)
 
+
+def _parse_iso_dt(s: str) -> datetime | None:
+    try:
+        # Accept ISO 8601 with or without timezone.
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _select_memory_candidates(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    '''
+    Tighten memory selection at read time only (no schema/compaction).
+    Deterministic: filter -> rank -> dedup -> cap. Fail-open on any error.
+    '''
+    try:
+        if not entries:
+            return []
+
+        # 1) Filter: keep only candidates with acceptable confidence + statement
+        min_conf = float(MEMORY_MIN_CONF)
+        filtered: list[dict[str, Any]] = []
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            if str(e.get('status') or '').strip().lower() not in {'', 'candidate'}:
+                # Only show candidates (or legacy entries with no status)
+                continue
+            stmt = str(e.get('statement') or '').strip()
+            if not stmt:
+                continue
+            conf = e.get('confidence')
+            if isinstance(conf, (int, float)) and float(conf) < min_conf:
+                continue
+            filtered.append(e)
+
+        if not filtered:
+            return []
+
+        # 2) Rank: salience DESC, confidence DESC, recency DESC
+        def _recency_key(e: dict[str, Any]) -> float:
+            ts = str(e.get('ts_generated') or '').strip()
+            d = _parse_iso_dt(ts) if ts else None
+            if d:
+                return d.timestamp()
+            sd = str(e.get('source_episode_date') or '').strip()
+            if sd:
+                d2 = _parse_iso_dt(sd) or _parse_iso_dt(sd + 'T00:00:00+00:00')
+                if d2:
+                    return d2.timestamp()
+            return 0.0
+
+        def _num(v) -> float:
+            return float(v) if isinstance(v, (int, float)) else 0.0
+
+        ranked = sorted(
+            filtered,
+            key=lambda e: (_num(e.get('salience')), _num(e.get('confidence')), _recency_key(e)),
+            reverse=True,
+        )
+
+        # 3) Dedup: keep only one per candidate_type; also avoid identical statements
+        seen_types: set[str] = set()
+        seen_stmt: set[str] = set()
+        out: list[dict[str, Any]] = []
+        cap = max(1, int(MEMORY_MAX_CANDIDATES))
+        for e in ranked:
+            ctype = str(e.get('candidate_type') or '').strip().lower()
+            stmt = str(e.get('statement') or '').strip()
+            if stmt in seen_stmt:
+                continue
+            if ctype and ctype in seen_types:
+                continue
+            if ctype:
+                seen_types.add(ctype)
+            seen_stmt.add(stmt)
+            out.append(e)
+            if len(out) >= cap:
+                break
+
+        return out
+    except Exception:
+        # Fail-open: never break advisor flow due to memory selection
+        try:
+            cap = max(1, int(MEMORY_MAX_CANDIDATES))
+        except Exception:
+            cap = 3
+        return entries[:cap] if entries else []
 
 def _format_memory_block(entries: list[dict[str, Any]]) -> str | None:
     if not entries:
@@ -727,7 +817,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(session, dict):
         session["mode"] = mode
 
-    mem = _format_memory_block(_load_recent_memory_candidates())
+    mem = _format_memory_block(_select_memory_candidates(_load_recent_memory_candidates()))
     answer = _advisor_compose_answer(mode, question, followup=None, memory_block=mem)
     _advisor_append(context, "assistant", answer)
 
@@ -794,7 +884,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         _advisor_append(context, "user", text)
 
-        mem = _format_memory_block(_load_recent_memory_candidates())
+        mem = _format_memory_block(_select_memory_candidates(_load_recent_memory_candidates()))
         answer = _advisor_compose_answer(mode, str(question or ""), followup=text, memory_block=mem)
         if isinstance(session, dict):
             session["mode"] = mode
@@ -922,7 +1012,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await q.message.reply_text("No active /ask question. Try /ask <question>.")
                 return
 
-            mem = _format_memory_block(_load_recent_memory_candidates())
+            mem = _format_memory_block(_select_memory_candidates(_load_recent_memory_candidates()))
             answer = _advisor_compose_answer(mode, str(question), followup=None, memory_block=mem)
             _advisor_append(context, "assistant", answer)
             ok, body = _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
