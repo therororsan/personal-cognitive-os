@@ -6,6 +6,8 @@ import urllib.request
 import uuid
 import hashlib
 from datetime import datetime, timezone
+from collections import deque
+from typing import Any
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -41,6 +43,15 @@ CB_PREFIX = "pco"
 # Advisor (Telegram-only surface; core intent is surface-agnostic)
 ADVISOR_SESSION_KEY = "advisor_session"
 ADVISOR_DEFAULT_MODE_KEY = "advisor_default_mode"
+
+# --- Layer 3 (Memory v0) integration (read-only) ---
+# Resolution order:
+# 1) PCO_MEMORY_USER_ID (explicit, deterministic)
+# 2) if exactly 1 directory exists under backend/logs/memory/, use it
+# 3) otherwise: no memory injected (fail open)
+MEMORY_USER_ID_ENV = "PCO_MEMORY_USER_ID"
+MEMORY_TAIL_LIMIT = int(os.environ.get("PCO_MEMORY_TAIL_LIMIT", "20"))
+MEMORY_DIR = os.path.join(os.path.dirname(__file__), "logs", "memory")
 
 
 def _utc_now_iso() -> str:
@@ -119,7 +130,6 @@ def _append_advisor_run(record: dict) -> None:
     path = os.path.join(ADVISOR_RUNS_DIR, f"{_local_date_str()}.jsonl")
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
 
 
 # In-memory aggregation for operator-visible RUN_COMPLETE summary lines.
@@ -253,7 +263,6 @@ def _log_advisor_event(
         )
 
 
-
 def _post_raw_event(source: str, text: str) -> tuple[bool, str]:
     payload = {"source": source, "text": text}
     data = json.dumps(payload).encode("utf-8")
@@ -274,6 +283,91 @@ def _post_raw_event(source: str, text: str) -> tuple[bool, str]:
             return True, body
     except Exception as e:
         return False, str(e)
+
+
+# --- Memory v0 helpers (read-only) ---
+
+def _resolve_memory_user_dir() -> str | None:
+    if not os.path.isdir(MEMORY_DIR):
+        return None
+
+    explicit = (os.environ.get(MEMORY_USER_ID_ENV) or "").strip()
+    if explicit:
+        p = os.path.join(MEMORY_DIR, explicit)
+        return p if os.path.isdir(p) else None
+
+    # Heuristic: if only one user dir exists, use it
+    try:
+        dirs = [
+            os.path.join(MEMORY_DIR, d)
+            for d in os.listdir(MEMORY_DIR)
+            if os.path.isdir(os.path.join(MEMORY_DIR, d))
+        ]
+    except Exception:
+        return None
+
+    if len(dirs) == 1:
+        return dirs[0]
+    return None
+
+
+def _load_recent_memory_candidates(limit: int = MEMORY_TAIL_LIMIT) -> list[dict[str, Any]]:
+    user_dir = _resolve_memory_user_dir()
+    if not user_dir:
+        return []
+
+    fpath = os.path.join(user_dir, "memory_v0.jsonl")
+    if not os.path.isfile(fpath):
+        return []
+
+    dq: deque[dict[str, Any]] = deque(maxlen=max(1, int(limit or 20)))
+    try:
+        with open(fpath, "r", encoding="utf-8") as f:
+            for line in f:
+                line = (line or "").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        dq.append(obj)
+                except Exception:
+                    continue
+    except Exception:
+        return []
+
+    return list(dq)
+
+
+def _format_memory_block(entries: list[dict[str, Any]]) -> str | None:
+    if not entries:
+        return None
+
+    lines: list[str] = []
+    lines.append("**MEMORY CANDIDATES (weak-signal; confidence-weighted):**")
+    for e in entries:
+        ctype = str(e.get("candidate_type") or "").strip()
+        stmt = str(e.get("statement") or "").strip()
+        conf = e.get("confidence")
+        sal = e.get("salience")
+        src_date = str(e.get("source_episode_date") or "").strip()
+        if not stmt:
+            continue
+
+        tag = f"[{ctype}]" if ctype else "[memory]"
+        meta = []
+        if isinstance(conf, (int, float)):
+            meta.append(f"conf={conf:.2f}")
+        if isinstance(sal, (int, float)):
+            meta.append(f"sal={sal:.2f}")
+        if src_date:
+            meta.append(f"src={src_date}")
+        meta_s = ("; " + ", ".join(meta)) if meta else ""
+        lines.append(f"- {tag} {stmt}{meta_s}")
+
+    if len(lines) <= 1:
+        return None
+    return "\n".join(lines)
 
 
 def _transcribe_deepgram(audio_path: str) -> str:
@@ -442,13 +536,18 @@ def _advisor_append(context: ContextTypes.DEFAULT_TYPE, role: str, text: str) ->
     hist.append({"role": role, "text": text, "ts": _utc_now_iso()})
 
 
-def _advisor_compose_answer(mode: str, question: str, followup: str | None) -> str:
+def _advisor_compose_answer(mode: str, question: str, followup: str | None, memory_block: str | None = None) -> str:
     q = (question or "").strip()
     f = (followup or "").strip() if followup else ""
+
     if mode == "FAST":
         parts = [
             "⚡ FAST (v0)",
             "",
+        ]
+        if memory_block:
+            parts += [memory_block, ""]
+        parts += [
             f"**Question:** {q}" if q else "**Question:** (missing)",
         ]
         if f:
@@ -471,6 +570,10 @@ def _advisor_compose_answer(mode: str, question: str, followup: str | None) -> s
     parts = [
         "🧠 DEEP (v0)",
         "",
+    ]
+    if memory_block:
+        parts += [memory_block, ""]
+    parts += [
         f"**Question:** {q}" if q else "**Question:** (missing)",
     ]
     if f:
@@ -582,33 +685,33 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.message.chat_id
     telegram_user_id = update.message.from_user.id if update.message.from_user else None
 
-    message_id = getattr(update.message, 'message_id', None)
+    message_id = getattr(update.message, "message_id", None)
     # Dedupe: the same Telegram message can be delivered more than once (or multiple handlers can see it).
     # We treat a given /ask message_id as idempotent.
     existing = context.user_data.get(ADVISOR_SESSION_KEY)
-    if isinstance(existing, dict) and existing.get('active') and existing.get('ask_message_id') == message_id:
+    if isinstance(existing, dict) and existing.get("active") and existing.get("ask_message_id") == message_id:
         return
 
     _advisor_start_session(context, question)
     session = context.user_data.get(ADVISOR_SESSION_KEY, {})
     if isinstance(session, dict):
-        session['ask_message_id'] = message_id
-        session['asked_at_utc'] = _utc_now_iso()
+        session["ask_message_id"] = message_id
+        session["asked_at_utc"] = _utc_now_iso()
     run_id = session.get("run_id") if isinstance(session, dict) else uuid.uuid4().hex[:12]
     turn = int(session.get("turn", 0)) if isinstance(session, dict) else 0
 
     # Log question as raw event (surface-agnostic; schema remains {source,text})
     ok, body = _post_raw_event("telegram_advisor", f"ASK\nMODE=(pending)\nQ: {question}")
     _log_advisor_event(
-    event="ASK",
-    run_id=str(run_id),
-    turn=turn,
-    chat_id=chat_id,
-    telegram_user_id=telegram_user_id,
-    mode=None,
-    question=question,
-    raw_event_ok=ok,
-    raw_event_body=body,
+        event="ASK",
+        run_id=str(run_id),
+        turn=turn,
+        chat_id=chat_id,
+        telegram_user_id=telegram_user_id,
+        mode=None,
+        question=question,
+        raw_event_ok=ok,
+        raw_event_body=body,
     )
 
     mode = _advisor_get_mode(context)
@@ -624,21 +727,22 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(session, dict):
         session["mode"] = mode
 
-    answer = _advisor_compose_answer(mode, question, followup=None)
+    mem = _format_memory_block(_load_recent_memory_candidates())
+    answer = _advisor_compose_answer(mode, question, followup=None, memory_block=mem)
     _advisor_append(context, "assistant", answer)
 
     ok, body = _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
     _log_advisor_event(
-    event="ANSWER",
-    run_id=str(run_id),
-    turn=turn,
-    chat_id=chat_id,
-    telegram_user_id=telegram_user_id,
-    mode=mode,
-    question=question,
-    answer_text=answer,
-    raw_event_ok=ok,
-    raw_event_body=body,
+        event="ANSWER",
+        run_id=str(run_id),
+        turn=turn,
+        chat_id=chat_id,
+        telegram_user_id=telegram_user_id,
+        mode=mode,
+        question=question,
+        answer_text=answer,
+        raw_event_ok=ok,
+        raw_event_body=body,
     )
 
     await update.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
@@ -690,7 +794,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         _advisor_append(context, "user", text)
 
-        answer = _advisor_compose_answer(mode, str(question or ""), followup=text)
+        mem = _format_memory_block(_load_recent_memory_candidates())
+        answer = _advisor_compose_answer(mode, str(question or ""), followup=text, memory_block=mem)
         if isinstance(session, dict):
             session["mode"] = mode
         _advisor_append(context, "assistant", answer)
@@ -704,17 +809,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         ok, body = _post_raw_event("telegram_advisor", f"FOLLOWUP\nMODE={mode}\nQ: {question}\nU: {text}\n\n{answer}")
         _log_advisor_event(
-        event="FOLLOWUP",
-        run_id=str(run_id),
-        turn=turn,
-        chat_id=update.message.chat_id,
-        telegram_user_id=update.message.from_user.id if update.message.from_user else None,
-        mode=mode,
-        question=str(question or ""),
-        user_text=text,
-        answer_text=answer,
-        raw_event_ok=ok,
-        raw_event_body=body,
+            event="FOLLOWUP",
+            run_id=str(run_id),
+            turn=turn,
+            chat_id=update.message.chat_id,
+            telegram_user_id=update.message.from_user.id if update.message.from_user else None,
+            mode=mode,
+            question=str(question or ""),
+            user_text=text,
+            answer_text=answer,
+            raw_event_ok=ok,
+            raw_event_body=body,
         )
 
         await update.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
@@ -817,22 +922,23 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await q.message.reply_text("No active /ask question. Try /ask <question>.")
                 return
 
-            answer = _advisor_compose_answer(mode, str(question), followup=None)
+            mem = _format_memory_block(_load_recent_memory_candidates())
+            answer = _advisor_compose_answer(mode, str(question), followup=None, memory_block=mem)
             _advisor_append(context, "assistant", answer)
             ok, body = _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
             run_id = session.get("run_id") if isinstance(session, dict) else uuid.uuid4().hex[:12]
             turn = int(session.get("turn", 0)) if isinstance(session, dict) else 0
             _log_advisor_event(
-            event="ANSWER",
-            run_id=str(run_id),
-            turn=turn,
-            chat_id=q.message.chat_id if q.message else None,
-            telegram_user_id=q.from_user.id if q.from_user else None,
-            mode=mode,
-            question=str(question or ""),
-            answer_text=answer,
-            raw_event_ok=ok,
-            raw_event_body=body,
+                event="ANSWER",
+                run_id=str(run_id),
+                turn=turn,
+                chat_id=q.message.chat_id if q.message else None,
+                telegram_user_id=q.from_user.id if q.from_user else None,
+                mode=mode,
+                question=str(question or ""),
+                answer_text=answer,
+                raw_event_ok=ok,
+                raw_event_body=body,
             )
 
             await q.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
