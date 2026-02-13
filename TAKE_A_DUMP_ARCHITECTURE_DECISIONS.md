@@ -87,3 +87,15 @@ This decision is locked to prevent accidental large-scale repo damage.
   - No core system modification is allowed.
 
 This decision prevents premature hardening of memory semantics.
+
+
+---
+
+## ADD — 2026-02-13 — Memory v0 advisor integration is read-only (LOCKED)
+
+- Advisor may **read** Memory v0 candidates and present them as weak-signal context.
+- Advisor must not mutate or rewrite memory artifacts as part of answering.
+- Memory injection must be:
+  - optional (fail-open)
+  - reversible
+  - surface-layer only (Telegram is current surface; design remains surface-agnostic)

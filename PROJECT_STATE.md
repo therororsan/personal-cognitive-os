@@ -277,3 +277,30 @@ Non-goals:
 - No compaction
 - No irreversible summarization
 - No schema modification
+
+
+---
+
+## ADD — 2026-02-13 — Layer 3 Memory v0 integrated into Advisor (Telegram)
+
+Status:
+- Layer 3 Memory v0 remains **job-only, file-based, append-only**, and fully reversible (no DB/schema changes).
+- Advisor now **reads** Memory v0 entries and injects them into `/ask` answers as **weak-signal context** (read-only).
+
+Memory artifact:
+- `backend/logs/memory/<user_id>/memory_v0.jsonl`
+
+Advisor integration behavior (read-only):
+- On `/ask` answers and follow-ups, the bot may prepend a block:
+  - `MEMORY CANDIDATES (weak-signal; confidence-weighted)`
+- If memory cannot be resolved safely, the advisor proceeds without memory (fail-open).
+
+Deterministic user mapping (recommended):
+- Environment variable:
+  - `PCO_MEMORY_USER_ID=<user_id>`
+- Optional:
+  - `PCO_MEMORY_TAIL_LIMIT=<N>` (default: 20)
+
+Reversibility:
+- Deleting `backend/logs/memory/` disables all Layer 3 effects immediately.
+- No memory compaction or consolidation is introduced.

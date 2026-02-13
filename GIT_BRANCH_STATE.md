@@ -60,3 +60,19 @@ Planned new work:
   - `67b5e8d859f92d94c2bd7c67661cfddf7d966d81`
 - Scope of change at this checkpoint:
   - Telegram bot: added Advisor MVP A1 (`/ask`, sticky `/mode`, follow-up mode switching, done → return to capture)
+
+
+---
+
+## ADD — 2026-02-13 — Layer 3 Memory v0 implementation checkpoints (recorded)
+
+Branch:
+- `feat/advisor-mvp-a1`
+
+Known checkpoints (from operator logs):
+- Docs governance updates (Codex protocol + terminology): commit `a170c5d`
+- Memory v0 job (append-only JSONL): commit `5821b8b`
+- Memory v0 dedup by statement: commit `aa2ff3f`
+
+Note:
+- If additional commits were made after `aa2ff3f` (e.g., advisor memory injection), record their SHAs here when available.

@@ -161,3 +161,30 @@ Classification:
 - Non-breaking.
 - No API changes.
 - Job-only.
+
+---
+
+## ADD — 2026-02-13 — Advisor reads Memory v0 as weak-signal context (read-only)
+
+Decision:
+- The Advisor surface may **read** Memory v0 (append-only JSONL) and inject recent entries into answers as context.
+- This is **read-only** and does not modify memory artifacts during advisory responses.
+
+Constraints (binding):
+- Memory v0 remains:
+  - append-only
+  - confidence-weighted / weak-signal
+  - reversible
+  - file-based
+- No DB schema changes.
+- No compaction / consolidation.
+- Advisor must fail-open (no user-visible errors) if memory is missing or ambiguous.
+
+Deterministic user mapping:
+- Prefer explicit mapping via:
+  - `PCO_MEMORY_USER_ID=<user_id>`
+- Tail control:
+  - `PCO_MEMORY_TAIL_LIMIT=<N>` (default: 20)
+
+Rationale:
+- Improves advice continuity without introducing irreversible memory semantics or new infrastructure risk.

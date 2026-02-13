@@ -75,3 +75,20 @@ Resolution:
 
 Classification:
 - Operator/process hygiene issue + file replacement mismatch, not a backend or Telegram API defect.
+
+
+---
+
+## ADD — 2026-02-13 — Patch workflow brittleness (operator ergonomics)
+
+Observation:
+- Applying large patches via cmd.exe + PowerShell quoting can fail (encoding/quoting issues; "corrupt patch" / broken here-strings).
+
+Mitigation:
+- Prefer one of:
+  - downloadable full-file replacement artifacts, or
+  - use repo-native git workflows to generate/apply patches (avoid nested quoting), or
+  - capture file via upload and return a precise replacement.
+
+Classification:
+- Operator ergonomics issue; not a core system failure.

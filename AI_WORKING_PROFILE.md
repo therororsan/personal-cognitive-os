@@ -74,3 +74,16 @@ If any of the above is false → **Codex use is forbidden**.
   - provided as downloadable replacement files only
 
 Codex violations must be recorded in **AI_CRITIQUE_LOG.md**.
+
+
+---
+
+## ADD — 2026-02-13 — Operator environment variables (PCO)
+
+Recommended persistent settings (Windows):
+- Use `setx` for user-level persistence (takes effect in new shells).
+- Use `set` for current-shell immediacy.
+
+Memory v0 (advisor read-only context):
+- `PCO_MEMORY_USER_ID=<user_id>` (recommended, deterministic)
+- `PCO_MEMORY_TAIL_LIMIT=<N>` (optional; default 20)
