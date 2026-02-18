@@ -5,6 +5,7 @@ import tempfile
 import urllib.request
 import uuid
 import hashlib
+import asyncio
 from datetime import datetime, timezone
 from collections import deque
 from typing import Any
@@ -18,6 +19,8 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+from llm_client import generate_advisor_response
 
 BACKEND_URL = os.environ.get("PCO_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 RAW_EVENTS_URL = f"{BACKEND_URL}/v1/raw-events"
@@ -511,7 +514,7 @@ def _advisor_start_session(context: ContextTypes.DEFAULT_TYPE, question: str) ->
         "run_id": uuid.uuid4().hex[:12],
         "turn": 0,
         "question": question,
-        "history": [{"role": "user", "text": question, "ts": _utc_now_iso()}],
+        "history": [{"role": "user", "content": question, "ts": _utc_now_iso()}],
         "mode": _advisor_get_mode(context) or None,  # selected later if None
         "ask_message_id": None,
         "asked_at_utc": _utc_now_iso(),
@@ -525,80 +528,6 @@ def _advisor_end_session(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop(ADVISOR_SESSION_KEY, None)
 
 
-def _advisor_append(context: ContextTypes.DEFAULT_TYPE, role: str, text: str) -> None:
-    s = context.user_data.get(ADVISOR_SESSION_KEY)
-    if not isinstance(s, dict):
-        return
-    hist = s.get("history")
-    if not isinstance(hist, list):
-        hist = []
-        s["history"] = hist
-    hist.append({"role": role, "text": text, "ts": _utc_now_iso()})
-
-
-def _advisor_compose_answer(mode: str, question: str, followup: str | None, memory_block: str | None = None) -> str:
-    q = (question or "").strip()
-    f = (followup or "").strip() if followup else ""
-
-    if mode == "FAST":
-        parts = [
-            "⚡ FAST (v0)",
-            "",
-        ]
-        if memory_block:
-            parts += [memory_block, ""]
-        parts += [
-            f"**Question:** {q}" if q else "**Question:** (missing)",
-        ]
-        if f:
-            parts.append(f"**Follow-up:** {f}")
-        parts += [
-            "",
-            "**Best bet (quick):**",
-            "- (1) Choose the smallest next action that reduces uncertainty.",
-            "- (2) Protect energy/attention; avoid over-commitment this week.",
-            "",
-            "**Next step (do today):**",
-            "- Write 1 sentence: what outcome matters most by end of week?",
-            "- Take 15 minutes to pick the one move that supports it.",
-            "",
-            "If you want, reply with: what’s the *real constraint* (time, energy, fear, ambiguity)?",
-        ]
-        return _format_transcript("\n".join(parts), limit=3800)
-
-    # DEEP
-    parts = [
-        "🧠 DEEP (v0)",
-        "",
-    ]
-    if memory_block:
-        parts += [memory_block, ""]
-    parts += [
-        f"**Question:** {q}" if q else "**Question:** (missing)",
-    ]
-    if f:
-        parts.append(f"**Follow-up:** {f}")
-    parts += [
-        "",
-        "**1) Frame the decision**",
-        "- What does “slow down” mean operationally (hours? scope? pace? standards)?",
-        "- What’s the downside of slowing down vs not slowing down?",
-        "",
-        "**2) Competing hypotheses**",
-        "- You need recovery to avoid a bad week later (burnout / mistakes).",
-        "- You’re avoiding discomfort, and speed would compound progress.",
-        "",
-        "**3) A practical test (low regret)**",
-        "- Pick 1–2 deliverables that matter most this week.",
-        "- Timebox deep work blocks; cut/decline the rest.",
-        "",
-        "**4) Risks to watch**",
-        "- If slowing down causes anxiety/avoidance spiral → tighten scope, not pace.",
-        "- If speeding up causes sloppy outputs → add a simple quality gate.",
-        "",
-        "Reply with: what’s the deadline pressure, and what happens if you slip by 1–2 days?",
-    ]
-    return _format_transcript("\n".join(parts), limit=3800)
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -665,21 +594,15 @@ async def done_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("No active advisor session.")
 
 
+# Phase 1: Conversational long-term advisor mode – natural back-and-forth dialogue
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
 
-    # Extract question
-    question = ""
-    if context.args:
-        question = " ".join(context.args).strip()
-    else:
-        # In case args parsing is odd, fall back to raw text
-        t = (update.message.text or "").strip()
-        question = t[len("/ask") :].strip() if t.lower().startswith("/ask") else t
-
+    question = " ".join(context.args).strip()
+    print("[DEBUG] ask_cmd started with question:", question)
     if not question:
-        await update.message.reply_text("Usage: /ask <question>")
+        await update.message.reply_text("Please provide a question after /ask")
         return
 
     chat_id = update.message.chat_id
@@ -693,7 +616,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     _advisor_start_session(context, question)
-    session = context.user_data.get(ADVISOR_SESSION_KEY, {})
+    session = context.user_data.setdefault(ADVISOR_SESSION_KEY, {})
     if isinstance(session, dict):
         session["ask_message_id"] = message_id
         session["asked_at_utc"] = _utc_now_iso()
@@ -714,21 +637,32 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         raw_event_body=body,
     )
 
-    mode = _advisor_get_mode(context)
+    mode = session.get(ADVISOR_DEFAULT_MODE_KEY) if isinstance(session, dict) else None
     if not mode:
-        await update.message.reply_text(
-            "How do you want to explore this?",
-            reply_markup=_build_ask_mode_keyboard(),
-        )
-        return
+        mode = "FAST"
 
-    # If default mode is set, answer immediately
-    session = context.user_data.get(ADVISOR_SESSION_KEY, {})
+    mode = str(mode).upper()
+    if mode not in ("FAST", "DEEP"):
+        mode = "FAST"
     if isinstance(session, dict):
         session["mode"] = mode
 
-    mem = _format_memory_block(_load_recent_memory_candidates())
-    answer = _advisor_compose_answer(mode, question, followup=None, memory_block=mem)
+    print("[DEBUG] Selected mode:", mode)
+
+    user_id = os.getenv("PCO_MEMORY_USER_ID") or "094ebda7-4004-422d-8857-7ee773756a6d"
+    print("[DEBUG] Calling LLM with user_id:", user_id)
+    try:
+        answer = await asyncio.to_thread(
+            generate_advisor_response,
+            question,
+            mode,
+            user_id=user_id,
+            thread_history=_get_advisor_history(context),
+        )
+    except Exception:
+        answer = "Sorry, reasoning engine unavailable right now — try again soon"
+
+    _advisor_append(context, "user", question)
     _advisor_append(context, "assistant", answer)
 
     ok, body = _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
@@ -783,44 +717,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _send_review(update.message, text, pending_id)
         return
 
-    # Advisor follow-up mode: while active, treat plain text as advisor follow-up (no approval gate).
-    if _advisor_active(context):
+    # Phase 1: Normal text messages = advisor follow-up when session active (critical for conversational flow)
+    if _advisor_active(context) and not text.startswith("/"):
+        print("[DEBUG] Follow-up text message routed to LLM: " + text)
         session = context.user_data.get(ADVISOR_SESSION_KEY, {})
-        question = session.get("question") if isinstance(session, dict) else ""
         mode = (session.get("mode") if isinstance(session, dict) else None) or _advisor_get_mode(context) or "FAST"
-        mode = str(mode).upper()
-        if mode not in ("FAST", "DEEP"):
-            mode = "FAST"
+        history = _get_advisor_history(context)
+
+        user_id = os.getenv("PCO_MEMORY_USER_ID") or "094ebda7-4004-422d-8857-7ee773756a6d"
+        try:
+            answer = await asyncio.to_thread(
+                generate_advisor_response,
+                text,
+                mode,
+                user_id=user_id,
+                thread_history=history,
+            )
+        except Exception:
+            answer = "Sorry, reasoning engine unavailable right now — try again soon"
 
         _advisor_append(context, "user", text)
-
-        mem = _format_memory_block(_load_recent_memory_candidates())
-        answer = _advisor_compose_answer(mode, str(question or ""), followup=text, memory_block=mem)
-        if isinstance(session, dict):
-            session["mode"] = mode
         _advisor_append(context, "assistant", answer)
-
-        # Increment turn counter for this advisor run
-        run_id = session.get("run_id") if isinstance(session, dict) else uuid.uuid4().hex[:12]
-        turn = int(session.get("turn", 0)) if isinstance(session, dict) else 0
-        turn += 1
-        if isinstance(session, dict):
-            session["turn"] = turn
-
-        ok, body = _post_raw_event("telegram_advisor", f"FOLLOWUP\nMODE={mode}\nQ: {question}\nU: {text}\n\n{answer}")
-        _log_advisor_event(
-            event="FOLLOWUP",
-            run_id=str(run_id),
-            turn=turn,
-            chat_id=update.message.chat_id,
-            telegram_user_id=update.message.from_user.id if update.message.from_user else None,
-            mode=mode,
-            question=str(question or ""),
-            user_text=text,
-            answer_text=answer,
-            raw_event_ok=ok,
-            raw_event_body=body,
-        )
 
         await update.message.reply_text(answer, reply_markup=_build_ask_followup_keyboard())
         return
@@ -912,19 +829,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         sub = (pending_id or "").strip().lower()
         if sub in ("fast", "deep"):
             mode = "FAST" if sub == "fast" else "DEEP"
-            session = context.user_data.get(ADVISOR_SESSION_KEY)
-            if isinstance(session, dict):
-                session["mode"] = mode
-
-            # If user has no default yet, keep it simple: they can set one with /mode
-            question = session.get("question") if isinstance(session, dict) else ""
+            session = context.user_data.setdefault(ADVISOR_SESSION_KEY, {})
+            question = session.pop("pending_question", None) if isinstance(session, dict) else None
             if not question:
-                await q.message.reply_text("No active /ask question. Try /ask <question>.")
+                await q.message.reply_text("No pending question")
                 return
 
-            mem = _format_memory_block(_load_recent_memory_candidates())
-            answer = _advisor_compose_answer(mode, str(question), followup=None, memory_block=mem)
+            user_id = os.getenv("PCO_MEMORY_USER_ID") or "094ebda7-4004-422d-8857-7ee773756a6d"
+            try:
+                answer = await asyncio.to_thread(
+                    generate_advisor_response,
+                    question,
+                    mode,
+                    user_id=user_id,
+                    thread_history=[],
+                )
+            except Exception:
+                answer = "Sorry, reasoning engine unavailable right now — try again soon"
+
+            _advisor_append(context, "user", question)
             _advisor_append(context, "assistant", answer)
+            if isinstance(session, dict):
+                # FIX: make the chosen mode sticky so future /ask use it automatically
+                session["mode"] = mode
+                context.user_data[ADVISOR_DEFAULT_MODE_KEY] = mode
+
             ok, body = _post_raw_event("telegram_advisor", f"ANSWER\nMODE={mode}\nQ: {question}\n\n{answer}")
             run_id = session.get("run_id") if isinstance(session, dict) else uuid.uuid4().hex[:12]
             turn = int(session.get("turn", 0)) if isinstance(session, dict) else 0
@@ -949,7 +878,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             session = context.user_data.get(ADVISOR_SESSION_KEY)
             if isinstance(session, dict):
                 session["mode"] = mode
-            await q.message.reply_text(f"Mode switched for follow-ups: {'⚡ FAST' if mode=='FAST' else '🧠 DEEP'}")
+            await q.message.reply_text(f"Follow-ups switched to {'⚡ FAST' if mode=='FAST' else '🧠 DEEP'}")
             return
 
         if sub == "done":
@@ -1012,6 +941,25 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     else:
         return
+
+
+def _advisor_append(context, role: str, content: str):
+    session = context.user_data.setdefault(ADVISOR_SESSION_KEY, {})
+    history = session.setdefault("history", [])
+    history.append({"role": role, "content": content})
+    if len(history) > 8:
+        history[:] = history[-8:]
+
+
+def _get_advisor_history(context):
+    session = context.user_data.get(ADVISOR_SESSION_KEY, {})
+    return session.get("history", [])
+
+
+def _get_or_set_mode(session, preferred_mode=None):
+    if preferred_mode:
+        session[ADVISOR_DEFAULT_MODE_KEY] = preferred_mode
+    return session.get(ADVISOR_DEFAULT_MODE_KEY, "FAST")  # fallback
 
 
 def main() -> None:
