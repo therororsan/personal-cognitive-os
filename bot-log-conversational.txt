@@ -1,0 +1,9 @@
+[DEBUG] ask_cmd started with question: I feel stuck on my next career move
+[DEBUG] Selected mode: FAST
+[DEBUG] Calling LLM with user_id: 094ebda7-4004-422d-8857-7ee773756a6d
+[DEBUG] Follow-up text message routed to LLM: My top transferable skill is financial modeling for impact assessment. What should I do next?
+[DEBUG] ask_cmd started with question: I feel stuck on my next career move
+[DEBUG] Selected mode: FAST
+[DEBUG] Calling LLM with user_id: 094ebda7-4004-422d-8857-7ee773756a6d
+[DEBUG] Follow-up text message routed to LLM: "My top transferable skill is financial modeling. What next?
+[DEBUG] Follow-up text message routed to LLM: Remember my sleep issues from last week?

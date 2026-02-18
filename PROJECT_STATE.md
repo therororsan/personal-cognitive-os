@@ -1,16 +1,38 @@
-# PROJECT_STATE (TAKE_A_DUMP 2026-02-04)
+# PROJECT_STATE (TAKE_A_DUMP 2026-02-14)
 
 ## Preservation Notice
-
 This document is **additive and preservative**.
 Operational details are retained verbatim unless explicitly superseded.
 
 ---
 
+## Major Milestone Achieved (2026-02-14)
+- **Advisor Beta Gate Passed**: `/ask` now triggers real LLM (Grok via xAI) with full patient-folder context (psychological snapshot + Memory v0 + episode recap).
+- Sticky FAST/DEEP modes working.
+- Follow-up conversations preserved via session history.
+- Capture flow (voice + text + approval gate) remains completely untouched.
+
 ## Backend Status
 - FastAPI + Postgres
 - Backend is authoritative; chat is non-authoritative
 - Running and stable
+
+## Advisor Status (Current)
+- Real LLM-backed (Grok)
+- Context: psychological snapshot, Memory v0 (read-only), episode summaries
+- Modes: sticky default via `/mode fast|deep|clear`
+- Picker shown only when no default set
+- Conversational follow-ups active (history preserved)
+- Fail-open fallback implemented
+
+## Next Phase (approved direction)
+- Evolve to persistent conversational persona (natural back-and-forth like this chat)
+- Long-term memory design (psychologist-file style: selective, high-salience, cost-controlled)
+- Voice capture remains sacred and unchanged
+
+[All previous sections from 2026-02-04 TAKE_A_DUMP remain verbatim below this line...]
+
+
 
 ## Raw Events
 - Append-only ingestion

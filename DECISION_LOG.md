@@ -188,3 +188,20 @@ Deterministic user mapping:
 
 Rationale:
 - Improves advice continuity without introducing irreversible memory semantics or new infrastructure risk.
+
+
+## ADD — 2026-02-14 — Advisor LLM Conversational Transition (Phase 1)
+
+Decision:
+- Transitioned from one-shot FAST/DEEP answers to persistent conversational advisor.
+- Removed forced mode picker on every /ask (now background sticky mode only).
+- Upgraded system prompt to define consistent long-term persona.
+- Goal: natural back-and-forth dialogue with memory and pattern recognition.
+
+Rationale:
+- Matches user vision of decade-scale cognitive companion.
+- Preserves all prior invariants (Memory v0 read-only, capture separation, reversibility).
+
+Status:
+- Implemented and smoke-tested.
+- Branch: feat/advisor-mvp-a1

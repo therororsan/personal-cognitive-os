@@ -1,0 +1,31 @@
+[DEBUG] ask_cmd started with question: I feel stuck on my next career move
+[DEBUG] Mode picker shown
+[DEBUG] ask_cmd started with question: I feel stuck on my next career move
+[DEBUG] Mode picker shown
+Traceback (most recent call last):
+  File "C:\Users\User\OneDrive\SMART\personal-cognitive-os\backend\telegram_capture_bot.py", line 1018, in <module>
+    
+  File "C:\Users\User\OneDrive\SMART\personal-cognitive-os\backend\telegram_capture_bot.py", line 1014, in main
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python312\Lib\site-packages\telegram\ext\_application.py", line 839, in run_polling
+    return self.__run(
+           ^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python312\Lib\site-packages\telegram\ext\_application.py", line 1073, in __run
+    loop.run_until_complete(self.updater.stop())  # type: ignore[union-attr]
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\User\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 678, in run_until_complete
+    self.run_forever()
+  File "C:\Users\User\AppData\Local\Programs\Python\Python312\Lib\asyncio\windows_events.py", line 322, in run_forever
+    super().run_forever()
+  File "C:\Users\User\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 645, in run_forever
+    self._run_once()
+  File "C:\Users\User\AppData\Local\Programs\Python\Python312\Lib\asyncio\base_events.py", line 1999, in _run_once
+    handle._run()
+  File "C:\Users\User\AppData\Local\Programs\Python\Python312\Lib\asyncio\events.py", line 88, in _run
+    self._context.run(self._callback, *self._args)
+  File "C:\Users\User\AppData\Local\Programs\Python\Python312\Lib\site-packages\anyio\_backends\_asyncio.py", line 1210, in connection_made
+    self.read_queue = deque()
+                      ^^^^^^^
+KeyboardInterrupt
+^C
